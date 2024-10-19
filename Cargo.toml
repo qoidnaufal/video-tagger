@@ -1,0 +1,13 @@
+[package]
+name = "gui_cushy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ffmpeg-next = "7.1.0"
+futures = "0.3.31"
+rfd = "0.15.0"
+
+[dependencies.cushy]
+git = "https://github.com/khonsulabs/cushy.git"
+branch = "main"
