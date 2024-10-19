@@ -12,17 +12,14 @@ use std::{
 
 use ffmpeg_next as ffmpeg;
 
-use cushy::kludgine::{
-    image::ImageBuffer,
-    wgpu::{FilterMode, TextureFormat, TextureUsages},
-};
-use cushy::kludgine::{image::ImageReader, AnyTexture};
-use cushy::kludgine::{image::Rgb, LazyTexture};
+use cushy::figures::units::Lp;
+use cushy::kludgine::image::{DynamicImage, ImageBuffer, ImageReader, Rgb};
+use cushy::kludgine::wgpu::{FilterMode, TextureFormat, TextureUsages};
+use cushy::kludgine::{AnyTexture, LazyTexture};
 use cushy::value::{Destination, Dynamic, Switchable};
 use cushy::widget::{MakeWidget, SharedCallback};
 use cushy::widgets::{layers::Modal, Image};
 use cushy::WithClone;
-use cushy::{figures::units::Lp, kludgine::image::DynamicImage};
 
 use futures::{future::OptionFuture, Future, FutureExt};
 
@@ -184,91 +181,94 @@ impl Default for App {
 impl App {
     fn handle_video_source(&self) -> impl MakeWidget {
         self.video_source.clone().switcher(move |source, _| {
+            let mut video_player = VideoPlayer::new();
+
             if let Some(source) = source {
                 let path = source.clone();
 
-                VideoPlayer::new()
-                    .start(move |content| {
-                        let path = path.clone();
-                        futures::executor::block_on(async move {
-                            let mut ictx = ffmpeg::format::input(&path).unwrap();
-                            let stream = ictx.streams().best(ffmpeg::media::Type::Video).unwrap();
-                            let vs_idx = stream.index();
+                video_player.start(move |content| {
+                    let path = path.clone();
 
-                            let video_decoder = VideoDecoder::start(
-                                &stream,
-                                Box::new(move |yuv_frame| {
-                                    let mut rgb_frame = ffmpeg::util::frame::Video::empty();
-                                    let mut rescaler = rescaler(yuv_frame);
-                                    rescaler.0.run(yuv_frame, &mut rgb_frame).unwrap();
+                    futures::executor::block_on(async move {
+                        let mut ictx = ffmpeg::format::input(&path).unwrap();
+                        let stream = ictx.streams().best(ffmpeg::media::Type::Video).unwrap();
+                        let vs_idx = stream.index();
 
-                                    // do something with the rgb_frame
-                                    let mut pixel_buffer = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(
-                                        rgb_frame.width(),
-                                        rgb_frame.height(),
-                                    );
+                        let video_decoder = VideoDecoder::start(
+                            &stream,
+                            Box::new(move |yuv_frame| {
+                                let mut rgb_frame = ffmpeg::util::frame::Video::empty();
+                                let mut rescaler = rescaler(yuv_frame);
+                                rescaler.0.run(yuv_frame, &mut rgb_frame).unwrap();
 
-                                    let pixel_line_iter = pixel_buffer.chunks_mut(
-                                        rgb_frame.width() as usize * std::mem::size_of::<Rgb<u8>>(),
-                                    );
+                                // do something with the rgb_frame
+                                let mut pixel_buffer = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(
+                                    rgb_frame.width(),
+                                    rgb_frame.height(),
+                                );
 
-                                    let source_line_iter =
-                                        rgb_frame.data(0).chunks_exact(rgb_frame.stride(0));
+                                let pixel_line_iter = pixel_buffer.chunks_mut(
+                                    rgb_frame.width() as usize * std::mem::size_of::<Rgb<u8>>(),
+                                );
 
-                                    for (source, dest) in source_line_iter.zip(pixel_line_iter) {
-                                        dest.copy_from_slice(&source[..dest.len()]);
-                                    }
+                                let source_line_iter =
+                                    rgb_frame.data(0).chunks_exact(rgb_frame.stride(0));
 
-                                    let pixel_buffer =
-                                        DynamicImage::from(pixel_buffer).into_rgba8();
+                                for (source, dest) in source_line_iter.zip(pixel_line_iter) {
+                                    dest.copy_from_slice(&source[..dest.len()]);
+                                }
 
-                                    let texture = LazyTexture::from_data(
-                                        cushy::figures::Size::new(
-                                            pixel_buffer.width().into(),
-                                            pixel_buffer.height().into(),
-                                        ),
-                                        TextureFormat::Rgba8UnormSrgb,
-                                        TextureUsages::TEXTURE_BINDING,
-                                        FilterMode::Nearest,
-                                        pixel_buffer.into_raw(),
-                                    );
-                                    let texture = AnyTexture::from(texture);
+                                let pixel_buffer = DynamicImage::from(pixel_buffer).into_rgba8();
 
-                                    content.set(texture);
-                                }),
-                            );
+                                let texture = LazyTexture::from_data(
+                                    cushy::figures::Size::new(
+                                        pixel_buffer.width().into(),
+                                        pixel_buffer.height().into(),
+                                    ),
+                                    TextureFormat::Rgba8UnormSrgb,
+                                    TextureUsages::TEXTURE_BINDING,
+                                    FilterMode::Nearest,
+                                    pixel_buffer.into_raw(),
+                                );
+                                let texture = AnyTexture::from(texture);
 
-                            let playing = true;
+                                content.set(texture);
+                            }),
+                        );
 
-                            let packet_forwarder_impl = async {
-                                for (stream, packet) in ictx.packets() {
-                                    if stream.index() == vs_idx {
-                                        video_decoder.receive_packet(packet);
-                                    }
+                        let playing = true;
+
+                        let packet_forwarder_impl = async {
+                            for (stream, packet) in ictx.packets() {
+                                if stream.index() == vs_idx {
+                                    video_decoder.receive_packet(packet);
                                 }
                             }
-                            .fuse()
-                            .shared();
+                        }
+                        .fuse()
+                        .shared();
 
-                            loop {
-                                let packet_forwarder: OptionFuture<_> = if playing {
-                                    Some(packet_forwarder_impl.clone())
-                                } else {
-                                    None
-                                }
-                                .into();
-
-                                futures::pin_mut!(packet_forwarder);
-
-                                futures::select! {
-                                    _ = packet_forwarder => {}
-                                }
+                        loop {
+                            let packet_forwarder: OptionFuture<_> = if playing {
+                                Some(packet_forwarder_impl.clone())
+                            } else {
+                                None
                             }
-                        })
+                            .into();
+
+                            futures::pin_mut!(packet_forwarder);
+
+                            futures::select! {
+                                _ = packet_forwarder => {}
+                            }
+                        }
                     })
-                    .make_widget()
+                });
+
+                video_player.make_widget()
             } else {
-                VideoPlayer::new().make_widget()
+                // VideoPlayer::new().make_widget()
+                video_player.make_widget()
             }
         })
     }

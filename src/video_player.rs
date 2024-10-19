@@ -59,7 +59,7 @@ impl VideoPlayer {
         }
     }
 
-    pub fn start<F>(&mut self, playback: F) -> Self
+    pub fn start<F>(&mut self, playback: F)
     where
         F: FnOnce(Dynamic<AnyTexture>) + Send + Sync + 'static,
     {
@@ -74,18 +74,9 @@ impl VideoPlayer {
                 .unwrap(),
         );
 
-        let scaling = ImageScaling::Aspect {
-            mode: Aspect::Fit,
-            orientation: Size::ZERO,
-        }
-        .into_value();
-
-        Self {
-            contents: texture,
-            scaling,
-            demuxer_thread,
-            control_sender: None,
-        }
+        self.contents = texture;
+        self.demuxer_thread = demuxer_thread;
+        self.control_sender = None;
     }
 
     fn calculate_frame_rect(
