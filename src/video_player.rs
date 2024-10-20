@@ -23,18 +23,14 @@ pub enum ControlCommand {
 pub struct VideoPlayer {
     contents: Dynamic<AnyTexture>,
     scaling: Value<ImageScaling>,
-    demuxer_thread: Option<JoinHandle<()>>,
+    playback_thread: Option<JoinHandle<()>>,
     control_sender: Option<std::sync::mpsc::Sender<ControlCommand>>,
 }
 
 impl Drop for VideoPlayer {
     fn drop(&mut self) {
-        if let Some(handle) = self.demuxer_thread.take() {
-            handle.join().unwrap()
-        }
-
-        if let Some(sender) = self.control_sender.take() {
-            drop(sender)
+        if let Some(handle) = self.playback_thread.take() {
+            drop(handle)
         }
     }
 }
@@ -54,7 +50,7 @@ impl VideoPlayer {
         Self {
             contents,
             scaling,
-            demuxer_thread: None,
+            playback_thread: None,
             control_sender: None,
         }
     }
@@ -63,19 +59,17 @@ impl VideoPlayer {
     where
         F: FnOnce(Dynamic<AnyTexture>) + Send + Sync + 'static,
     {
-        let texture = self.contents.clone();
-        let tx = texture.clone();
-        let demuxer_thread = Some(
+        let contents = self.contents.clone();
+        let texture = contents.clone();
+        let playback_thread = Some(
             std::thread::Builder::new()
-                .name("Demuxer Thread".into())
-                .spawn(move || {
-                    playback(tx);
-                })
+                .name("Playback Thread".into())
+                .spawn(|| playback(texture))
                 .unwrap(),
         );
 
-        self.contents = texture;
-        self.demuxer_thread = demuxer_thread;
+        self.contents = contents;
+        self.playback_thread = playback_thread;
         self.control_sender = None;
     }
 

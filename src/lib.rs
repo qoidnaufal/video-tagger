@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_variables)]
 
 mod counter;
+mod menu;
 mod video_player;
 
 use std::{
@@ -24,6 +25,7 @@ use cushy::WithClone;
 use futures::{future::OptionFuture, Future, FutureExt};
 
 use counter::Counter;
+use menu::MainMenu;
 use video_player::{ControlCommand, VideoPlayer};
 
 pub struct StreamClock {
@@ -77,8 +79,16 @@ impl Future for YieldNow {
 
 struct VideoDecoder {
     control_sender: std::sync::mpsc::Sender<ControlCommand>,
-    packet_sender: std::sync::mpsc::SyncSender<ffmpeg::codec::packet::Packet>,
+    packet_sender: std::sync::mpsc::Sender<ffmpeg::codec::packet::Packet>,
     receiver_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for VideoDecoder {
+    fn drop(&mut self) {
+        if let Some(handle) = self.receiver_thread.take() {
+            drop(handle)
+        }
+    }
 }
 
 impl VideoDecoder {
@@ -87,7 +97,8 @@ impl VideoDecoder {
         mut frame_callback: Box<dyn FnMut(&ffmpeg::util::frame::Video) + Send>,
     ) -> Self {
         let (control_sender, control_receiver) = std::sync::mpsc::channel::<ControlCommand>();
-        let (packet_sender, packet_receiver) = std::sync::mpsc::sync_channel(128);
+        let (packet_sender, packet_receiver) =
+            std::sync::mpsc::channel::<ffmpeg::codec::packet::Packet>();
 
         let decoder_ctx = ffmpeg::codec::Context::from_parameters(stream.parameters()).unwrap();
         let mut packet_decoder = decoder_ctx.decoder().video().unwrap();
@@ -150,7 +161,7 @@ impl VideoDecoder {
         }
     }
 
-    pub fn receive_packet(&self, packet: ffmpeg::codec::packet::packet::Packet) -> bool {
+    pub fn get_packet(&self, packet: ffmpeg::codec::packet::packet::Packet) -> bool {
         match self.packet_sender.send(packet) {
             Ok(_) => true,
             Err(_) => false,
@@ -166,6 +177,7 @@ pub struct App {
     image_source: Dynamic<Option<PathBuf>>,
     video_source: Dynamic<Option<PathBuf>>,
     counter: Arc<Mutex<Counter>>,
+    main_menu: MainMenu,
 }
 
 impl Default for App {
@@ -174,6 +186,7 @@ impl Default for App {
             image_source: Dynamic::new(None),
             video_source: Dynamic::new(None),
             counter: Arc::new(Mutex::new(Counter::new())),
+            main_menu: MainMenu::new(),
         }
     }
 }
@@ -241,7 +254,7 @@ impl App {
                         let packet_forwarder_impl = async {
                             for (stream, packet) in ictx.packets() {
                                 if stream.index() == vs_idx {
-                                    video_decoder.receive_packet(packet);
+                                    video_decoder.get_packet(packet);
                                 }
                             }
                         }
@@ -310,15 +323,19 @@ impl App {
         let on_error = error_callback(modal.clone());
 
         let image = self.handle_image_source(on_error);
-        let video = self.handle_video_source();
+        let video = self.handle_video_source().centered().pad_by(Lp::new(10));
 
         let counter = self.counter.clone();
         let counter = counter::counter(counter);
 
-        open_image_button
-            .and(open_video_button)
-            .into_rows()
-            .and(counter)
+        let _main_menu = self.main_menu.view();
+
+        // open_image_button
+        //     .and(open_video_button)
+        //     .into_rows()
+        open_video_button
+            .and(open_image_button)
+            // .and(counter)
             .into_columns()
             .and(image)
             .and(video)
